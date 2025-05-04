@@ -1,0 +1,235 @@
+#!/usr/bin/python3
+
+import re
+import yaml
+import json
+import sys
+import os
+import subprocess
+import tarfile
+import hashlib
+import base64
+import requests
+
+#
+from pprint import pprint
+
+def getAckonRunnerTokenAndId(login, password):
+    url = "http://localhost:8086/login/signin?login=" + login + "&password=" + password
+    response = json.loads(requests.get(url).content.decode('ascii'));
+    runnerid = response["runnerid"]
+    token = response["token"]
+    return runnerid, token
+
+def sendAckonRunnerPubkey(runnerid, token, pubkey):
+    format = {
+        "sendpubkey": {
+            "runnerid": runnerid,
+            "token": token,
+            "pubkey": pubkey,
+        }
+    }
+    response = json.loads(requests.post("http://localhost:8086/login/pubkey", json=format).content.decode('ascii'))
+    if response["status"] == "ok":
+        return True
+    else:
+        return False
+
+
+
+def help():
+    print("ackon-runner (action)")
+    print("")
+    print(" ackon-runner run (/path/to/data/directory)")
+    print(" ackon-runner login (username) (password)")
+    print("")
+
+def extractYamls(format):
+    loaded = yaml.safe_load(format["task"]["unsigned"]["attached-files-raw"]["scaling.yaml"])
+# {'scaling': {'download': {'factor': 'miliseconds', 'jitter': '10s'},
+#             'nodes': {'maxExecutionTime': 15,
+#                       'maxNodeQueue': 3,
+#                       'maxUsedNodesInParallel': 120},
+#             'upload': {'factor': 'seconds', 'jitter': '30s'}}}
+    format["task"]["unsigned"]["extracted-yamls"]["scaling"]["maxNodesUsedInParallel"] = loaded["scaling"]["nodes"]["maxUsedNodesInParallel"]
+    format["task"]["unsigned"]["extracted-yamls"]["scaling"]["maxExecutionTime"] = loaded["scaling"]["nodes"]["maxExecutionTime"]
+    format["task"]["unsigned"]["extracted-yamls"]["scaling"]["maxNodeQueue"] = loaded["scaling"]["nodes"]["maxNodeQueue"]
+
+    format["task"]["unsigned"]["extracted-yamls"]["scaling"]["download"]["jitter"] = timeStrToMs(loaded["scaling"]["download"]["jitter"])
+    if loaded["scaling"]["download"]["factor"] == 'miliseconds':
+        format["task"]["unsigned"]["extracted-yamls"]["scaling"]["download"]["factor"] = 1
+    else:
+        format["task"]["unsigned"]["extracted-yamls"]["scaling"]["download"]["factor"] = 1000
+    format["task"]["unsigned"]["extracted-yamls"]["scaling"]["upload"]["jitter"] = timeStrToMs(loaded["scaling"]["upload"]["jitter"])
+    if loaded["scaling"]["upload"]["factor"] == 'miliseconds':
+        format["task"]["unsigned"]["extracted-yamls"]["scaling"]["upload"]["factor"] = 1
+    else:
+        format["task"]["unsigned"]["extracted-yamls"]["scaling"]["upload"]["factor"] = 1000
+#	            "scaling": {
+#		        "maxNodesUsedInParallel": 150,
+#		        "maxExecutionTime": 30,
+#		        "maxNodeQueue": 3,
+#		        "download": {
+#		            "jitter": 10000,
+#		            "factor": 1,
+#		        },
+#		        "upload": {
+#		            "jitter": 30000,
+#		            "factor": 1000,
+#		        }
+
+    loaded = yaml.safe_load(format["task"]["unsigned"]["attached-files-raw"]["duplication.yaml"])
+#{'task': {'redundancy': 1, 'priorities': {'country': False, 'provider': False, 'owner': False, 'rack': True, 'hardware': True}}}
+    format["task"]["unsigned"]["extracted-yamls"]["duplication"]["redundancy"] = loaded["task"]["redundancy"]
+    format["task"]["unsigned"]["extracted-yamls"]["duplication"]["priorities"] = [];
+#    pprint(loaded["task"]["priorities"])
+    for key in loaded["task"]["priorities"]:
+        if loaded["task"]["priorities"][key]:
+            format["task"]["unsigned"]["extracted-yamls"]["duplication"]["priorities"].append(key)
+    return format
+
+def downloadKeys():
+    configdir = os.path.expanduser("~/.ackon")
+    if not os.path.isdir(configdir):
+        os.mkdir(configdir)
+    if not os.path.isdir(configdir + "/verify"):
+        os.mkdir(configdir + "/verify")
+    #download server public keys
+    #download coordinator public keys
+
+def login(login,password):
+    configdir = os.path.expanduser("~/.ackon")
+    if not os.path.isdir(configdir):
+        os.mkdir(configdir)
+    loginfile = os.path.expanduser("~/.ackon/runner-login")
+    if os.path.exists(loginfile):
+        print("Already logged in. Please erace ~/.ackon directory before new login")
+        return
+    runnerid, token = getAckonRunnerTokenAndId(login, password)
+#               - "openssl genrsa 3072" - stdout private
+# stdin private -  "| openssl rsa -pubout" - stdout public
+    private = subprocess.run(["openssl", "genrsa", "3072"], capture_output=True)
+    public = subprocess.run(["openssl", "rsa", "-pubout"], input=private.stdout, capture_output=True)
+    format = {
+        "runnerid": runnerid,
+        "token": token,
+        "private": private.stdout.decode('ascii'),
+        "public": public.stdout.decode('ascii'),
+    }
+    with open(loginfile, "w") as config:
+        if sendAckonRunnerPubkey(runnerid, token, format["public"]):
+            config.write(json.dumps(format))
+            print("Login successfully")
+    downloadKeys()
+
+def signRsa(raw, private):
+    fprivate = os.path.expanduser("~/.ackon/runner-tmp-private.pem")
+    fdata = os.path.expanduser("~/.ackon/runner-tmp-file.txt")
+    with open(fprivate, "w") as pprivate:
+        pprivate.write(private)
+    with open(fdata, "w") as pdata:
+        pdata.write(raw)
+    private = subprocess.run(["openssl", "dgst", "-sha1", "-sign", fprivate, fdata], capture_output=True)
+    sign = base64.b64encode(private.stdout).decode('ascii')
+    os.remove(fprivate)
+    os.remove(fdata)
+    return sign
+
+
+def readUserInfo(format):
+    configdir = os.path.expanduser("~/.ackon")
+    if not os.path.isdir(configdir):
+        os.mkdir(configdir)
+    loginfile = os.path.expanduser("~/.ackon/runner-login")
+    if not os.path.exists(loginfile):
+        print("You needs to login as first. Use `ackon login` command and read `ackon help`")
+        return
+    with open(loginfile) as f:
+        user = json.load(f)
+    return format
+
+def runOnce(format):
+    configdir = os.path.expanduser("~/.ackon")
+    if not os.path.isdir(configdir):
+        os.mkdir(configdir)
+    loginfile = os.path.expanduser("~/.ackon/runner-login")
+    if not os.path.exists(loginfile):
+        print("Please `ackon-runner login` first and see `ackon-runner help`")
+        return;
+    with open(loginfile) as f:
+        user = json.load(f)
+
+    rawtosign = (format["task"]["attached-files-hashes"]["Dockerfile"] + "\n" +
+                format["task"]["attached-files-hashes"]["upload.creds"] + "\n" +
+                format["task"]["attached-files-hashes"]["scaling.yaml"] + "\n" +
+                format["task"]["attached-files-hashes"]["duplication.yaml"] + "\n" +
+                format["task"]["attached-files-hashes"]["urls_list"]["hash"] + "\n" );
+    for key, value in format["task"]["unsigned"]["attached-files-raw"]["others"]:
+        rawtosign = (rawtosign + value + "\n")
+    rawtosign = (rawtosign + "mode=" + format["task"]["mode"] + "\n")
+    rawtosign = (rawtosign + "userid=" + user["runnerid"] + "\n")
+    rawtosign = (rawtosign + "taskid=" + format["task"]["task-id"] + "\n")
+    rawtosign = (rawtosign + format["task"]["server-signature"] + "\n")
+    rawtosign = (rawtosign + "coordinatorid=" + format["task"]["coordinator"]["coordinatorid"])
+    rawtosign = (rawtosign + format["task"]["coordinator-signature"])
+    rawtosign = (rawtosign + "runnerid=" + user["runnerid"] + "\n")
+    
+    format["task"]["runner"]["runnerid"] = user["runnerid"]
+    format["task"]["runner-signature"] = signRsa(rawtosign, user["private"])
+
+    workdir = os.path.expanduser("~/.ackon/task")
+    if not os.path.isdir(workdir):
+        os.mkdir(workdir)
+    if not os.path.isdir(workdir + "/in"):
+        os.mkdir(workdir + "/in")
+    if not os.path.isdir(workdir + "/in/sharded"):
+        os.mkdir(workdir + "/in/sharded")
+    if not os.path.isdir(workdir + "/out"):
+        os.mkdir(workdir + "/out")
+    if not os.path.isdir(workdir + "/out/sharded"):
+        os.mkdir(workdir + "/out/sharded")
+    with open(workdir + "/Dockerfile", "w") as f:
+        f.write(format["task"]["unsigned"]["attached-files-raw"]["Dockerfile"])
+        f.close()
+    for key, value in format["task"]["unsigned"]["attached-files-raw"]["others"]:
+        rawtosign = (rawtosign + value + "\n")
+        with open(workdir + "/in/" + key, "w") as f:
+            f.write(value)
+            f.close()
+
+    with open(workdir + "/in/sharded/one.txt", "w") as f:
+        f.write("test")
+        f.close()
+
+    #build docker image
+    public = subprocess.run(["docker", "build", "-t", "task", workdir], capture_output=True)
+    if public.returncode == 0:
+        output = subprocess.run(["docker", "run", "--network", "none", "--rm", "--name", "ackon-task", "--volume", workdir + "/out:/deploy/out", "task"], capture_output=True)
+        print(output.stdout)
+        print(output.stderr)
+        print(output.returncode)
+    else:
+        print(public.stdout)
+        print(public.stderr)
+        print(public.returncode)
+    #cleanup
+    cleanup = subprocess.run(["docker", "rm", "-f", "ackon-task", workdir], capture_output=True)
+    #report about done to coordinator
+    print(json.dumps(format))
+
+
+if (len(sys.argv)) < 2:
+    help()
+elif sys.argv[1] == "help":
+    help()
+elif sys.argv[1] == "run":
+    with open("./test.json") as f:
+        format = json.loads(f.read())
+        runOnce(format)
+elif sys.argv[1] == "login":
+    if len(sys.argv) < 4:
+        help()
+    else:
+        login(sys.argv[2], sys.argv[3])
+else:
+    help()
