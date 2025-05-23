@@ -1,5 +1,6 @@
 #!/usr/bin/python3
 
+import time
 import re
 import yaml
 import json
@@ -29,12 +30,14 @@ def sendAckonRunnerPubkey(runnerid, token, pubkey):
             "pubkey": pubkey,
         }
     }
-    response = json.loads(requests.post("http://coordinator.ackon:8086/login/pubkey", json=format).content.decode('ascii'))
+    resp = requests.post("http://coordinator.ackon:8086/login/pubkey", json=format).content
+    pprint(resp)
+    pprint(resp.decode('ascii'))
+    response = json.loads(resp.decode('ascii'))
     if response["status"] == "ok":
         return True
     else:
         return False
-
 
 
 def help():
@@ -96,6 +99,15 @@ def downloadKeys():
         os.mkdir(configdir + "/verify")
     #download server public keys
     #download coordinator public keys
+    url = "http://coordinator.ackon:8086/download/keys/coordinator"
+    response = json.loads(requests.get(url).content.decode('ascii'));
+#    pprint(response)
+    for key in response['coordinators']:
+        m = hashlib.sha256()
+        m.update(key.encode('ascii'))
+        fname = m.hexdigest()
+        with open(configdir + "/verify/" + fname + ".pub", "w") as pem:
+            pem.write(key)
 
 def login(login,password):
     configdir = os.path.expanduser("~/.ackon")
@@ -120,6 +132,7 @@ def login(login,password):
         if sendAckonRunnerPubkey(runnerid, token, format["public"]):
             config.write(json.dumps(format))
             print("Login successfully")
+    sendAckonRunnerPubkey(runnerid, token, public.stdout.decode('ascii'))
     downloadKeys()
 
 def signRsa(raw, private):
@@ -147,6 +160,35 @@ def readUserInfo(format):
     with open(loginfile) as f:
         user = json.load(f)
     return format
+
+def runWait():
+    while True:
+        configdir = os.path.expanduser("~/.ackon")
+        if not os.path.isdir(configdir):
+            os.mkdir(configdir)
+        loginfile = os.path.expanduser("~/.ackon/runner-login")
+        if not os.path.exists(loginfile):
+            print("Please `ackon-runner login` first and see `ackon-runner help`")
+            return;
+        with open(loginfile) as f:
+            user = json.load(f)
+    
+        url = "http://coordinator.ackon:8086/task/pull"
+        query = {
+            "taskpull": {
+                "runnerid": user['runnerid'],
+                "token": user['token']
+            }
+        }
+        resp = requests.post("http://coordinator.ackon:8086/task/pull", json=query).content
+        pprint(resp)
+        response = json.loads(resp.decode('ascii'))
+        if response["data"] == "wait":
+            #sleep
+            time.sleep(2)
+        else:
+            runOnce(response["format"])
+    
 
 def runOnce(format):
     configdir = os.path.expanduser("~/.ackon")
@@ -223,9 +265,7 @@ if (len(sys.argv)) < 2:
 elif sys.argv[1] == "help":
     help()
 elif sys.argv[1] == "run":
-    with open("./test.json") as f:
-        format = json.loads(f.read())
-        runOnce(format)
+    runWait()
 elif sys.argv[1] == "login":
     if len(sys.argv) < 4:
         help()
