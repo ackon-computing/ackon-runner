@@ -15,7 +15,7 @@ import requests
 from pprint import pprint
 
 def getAckonRunnerTokenAndId(login, password):
-    url = "http://localhost:8086/login/signin?login=" + login + "&password=" + password
+    url = "http://coordinator.ackon:8086/login/signin?login=" + login + "&password=" + password
     response = json.loads(requests.get(url).content.decode('ascii'));
     runnerid = response["runnerid"]
     token = response["token"]
@@ -29,7 +29,7 @@ def sendAckonRunnerPubkey(runnerid, token, pubkey):
             "pubkey": pubkey,
         }
     }
-    response = json.loads(requests.post("http://localhost:8086/login/pubkey", json=format).content.decode('ascii'))
+    response = json.loads(requests.post("http://coordinator.ackon:8086/login/pubkey", json=format).content.decode('ascii'))
     if response["status"] == "ok":
         return True
     else:
