@@ -180,15 +180,36 @@ def runWait():
                 "token": user['token']
             }
         }
-        resp = requests.post("http://coordinator.ackon:8086/task/pull", json=query).content
-        pprint(resp)
-        response = json.loads(resp.decode('ascii'))
-        if response["data"] == "wait":
-            #sleep
-            time.sleep(2)
-        else:
-            runOnce(response["format"])
-    
+        try:
+            resp = requests.post("http://coordinator.ackon:8086/task/pull", json=query).content
+            pprint(resp)
+            response = json.loads(resp.decode('ascii'))
+            if response["data"] == "wait":
+                #sleep
+                time.sleep(2)
+            else:
+                runOnce(response["format"])
+        except requests.exceptions.ConnectionError:
+            print("wait not connected")
+            time.sleep(10)
+
+def reportCoordinator(format, user):
+    url = "http://coordinator.ackon:8086/task/report"
+    query = {
+        "report": {},
+        "runnerid": user['runnerid'],
+        "token": user['token']
+    }
+    query["report"] = format
+    while True:
+        try:
+            pprint(query)
+            resp = requests.post(url, json=query).content
+            pprint(resp)
+            return
+        except requests.exceptions.ConnectionError:
+            print("wait not connected for report")
+            time.sleep(10)
 
 def runOnce(format):
     configdir = os.path.expanduser("~/.ackon")
@@ -212,12 +233,16 @@ def runOnce(format):
     rawtosign = (rawtosign + "userid=" + user["runnerid"] + "\n")
     rawtosign = (rawtosign + "taskid=" + format["task"]["task-id"] + "\n")
     rawtosign = (rawtosign + format["task"]["server-signature"] + "\n")
-    rawtosign = (rawtosign + "coordinatorid=" + format["task"]["coordinator"]["coordinatorid"])
-    rawtosign = (rawtosign + format["task"]["coordinator-signature"])
+    rawtosign = (rawtosign + "coordinatorid=" + format["task"]["coordinator"]["coordinatorid"] + "\n")
+    rawtosign = (rawtosign + format["task"]["coordinator-signature"] + "\n")
     rawtosign = (rawtosign + "runnerid=" + user["runnerid"] + "\n")
-    
+    rawtosign = (rawtosign + "n=" + str(format["task"]["unsigned"]["index"]["n"]) + "\n")
+    rawtosign = (rawtosign + "of=" + str(format["task"]["unsigned"]["index"]["of"]) + "\n")
+
     format["task"]["runner"]["runnerid"] = user["runnerid"]
     format["task"]["runner-signature"] = signRsa(rawtosign, user["private"])
+
+#    pprint(format)
 
     workdir = os.path.expanduser("~/.ackon/task")
     if not os.path.isdir(workdir):
@@ -250,15 +275,23 @@ def runOnce(format):
         print(output.stdout)
         print(output.stderr)
         print(output.returncode)
+        format["task"]["execution"] = {}
+        format["task"]["execution"]["stage"] = "run"
+        format["task"]["execution"]["return_code"] = output.returncode
     else:
         print(public.stdout)
         print(public.stderr)
         print(public.returncode)
+        format["task"]["execution"] = {}
+        format["task"]["execution"]["stage"] = "build"
+        format["task"]["execution"]["return_code"] = public.returncode
     #cleanup
     cleanup = subprocess.run(["docker", "rm", "-f", "ackon-task", workdir], capture_output=True)
     #report about done to coordinator
-    print(json.dumps(format))
-
+    del format["task"]["unsigned"]["extracted-yamls"]
+    del format["task"]["unsigned"]["attached-files-raw"]
+    pprint(format)
+    reportCoordinator(format, user)
 
 if (len(sys.argv)) < 2:
     help()
