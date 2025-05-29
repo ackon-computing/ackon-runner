@@ -11,6 +11,8 @@ import tarfile
 import hashlib
 import base64
 import requests
+import base64
+import gzip
 
 #
 from pprint import pprint
@@ -203,9 +205,33 @@ def reportCoordinator(format, user):
     query["report"] = format
     while True:
         try:
-            pprint(query)
+            #pprint(query)
             resp = requests.post(url, json=query).content
             pprint(resp)
+            response = json.loads(resp.decode('ascii'))
+            configdir = os.path.expanduser("~/.ackon")
+            if not os.path.isdir(configdir):
+                os.mkdir(configdir)
+            if not os.path.isdir(configdir + "/runner-data"):
+                os.mkdir(configdir + "/runner-data")
+            if not os.path.isdir(configdir + "/runner-data/piggybank"):
+                os.mkdir(configdir + "/runner-data/piggybank")
+            fname = configdir + "/runner-data/piggybank/processes-" + str(int(time.time())) + "-" + response["task"]["task-id"] + ".coin"
+            with gzip.open(fname, "wb") as file:
+                rawtosign = (format["task"]["attached-files-hashes"]["Dockerfile"] + "\n" +
+                            format["task"]["attached-files-hashes"]["upload.creds"] + "\n" +
+                            format["task"]["attached-files-hashes"]["scaling.yaml"] + "\n" +
+                            format["task"]["attached-files-hashes"]["duplication.yaml"] + "\n" +
+                            format["task"]["attached-files-hashes"]["urls_list"]["hash"] + "\n" );
+#                for key, value in format["task"]["unsigned"]["attached-files-raw"]["others"]:
+#                    rawtosign = (rawtosign + value + "\n")
+                del response["task"]["execution"]
+                del response["task"]["unsigned"]["status"]
+                response["task"]["signhead"] = rawtosign
+                del response["task"]["attached-files-hashes"]
+                file.write(base64.b64encode(json.dumps(response).encode('ascii')))
+                subprocess.run([ "./ackon-wallet", "emission", "fname" ])
+                file.close()
             return
         except requests.exceptions.ConnectionError:
             print("wait not connected for report")
@@ -240,6 +266,7 @@ def runOnce(format):
     rawtosign = (rawtosign + "of=" + str(format["task"]["unsigned"]["index"]["of"]) + "\n")
 
     format["task"]["runner"]["runnerid"] = user["runnerid"]
+
     format["task"]["runner-signature"] = signRsa(rawtosign, user["private"])
 
 #    pprint(format)
