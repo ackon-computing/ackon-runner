@@ -33,8 +33,8 @@ def sendAckonRunnerPubkey(runnerid, token, pubkey):
         }
     }
     resp = requests.post("http://coordinator.ackon:8086/login/pubkey", json=format).content
-    pprint(resp)
-    pprint(resp.decode('ascii'))
+    #pprint(resp)
+    #pprint(resp.decode('ascii'))
     response = json.loads(resp.decode('ascii'))
     if response["status"] == "ok":
         return True
@@ -45,7 +45,7 @@ def sendAckonRunnerPubkey(runnerid, token, pubkey):
 def help():
     print("ackon-runner (action)")
     print("")
-    print(" ackon-runner run (/path/to/data/directory)")
+    print(" ackon-runner run")
     print(" ackon-runner login (username) (password)")
     print("")
 
@@ -184,7 +184,7 @@ def runWait():
         }
         try:
             resp = requests.post("http://coordinator.ackon:8086/task/pull", json=query).content
-            pprint(resp)
+            #pprint(resp)
             response = json.loads(resp.decode('ascii'))
             if response["data"] == "wait":
                 #sleep
@@ -207,7 +207,7 @@ def reportCoordinator(format, user):
         try:
             #pprint(query)
             resp = requests.post(url, json=query).content
-            pprint(resp)
+            #pprint(resp)
             response = json.loads(resp.decode('ascii'))
             configdir = os.path.expanduser("~/.ackon")
             if not os.path.isdir(configdir):
@@ -230,8 +230,8 @@ def reportCoordinator(format, user):
                 response["task"]["signhead"] = rawtosign
                 del response["task"]["attached-files-hashes"]
                 file.write(base64.b64encode(json.dumps(response).encode('ascii')))
-                subprocess.run([ "./ackon-wallet", "emission", "fname" ])
                 file.close()
+                subprocess.run([ "./ackon-wallet", "issue", "s-14-6", "00000000000000000005", fname ])
             return
         except requests.exceptions.ConnectionError:
             print("wait not connected for report")
@@ -299,16 +299,16 @@ def runOnce(format):
     public = subprocess.run(["docker", "build", "-t", "task", workdir], capture_output=True)
     if public.returncode == 0:
         output = subprocess.run(["docker", "run", "--network", "none", "--rm", "--name", "ackon-task", "--volume", workdir + "/out:/deploy/out", "task"], capture_output=True)
-        print(output.stdout)
-        print(output.stderr)
-        print(output.returncode)
+        #print(output.stdout)
+        #print(output.stderr)
+        #print(output.returncode)
         format["task"]["execution"] = {}
         format["task"]["execution"]["stage"] = "run"
         format["task"]["execution"]["return_code"] = output.returncode
     else:
-        print(public.stdout)
-        print(public.stderr)
-        print(public.returncode)
+        #print(public.stdout)
+        #print(public.stderr)
+        #print(public.returncode)
         format["task"]["execution"] = {}
         format["task"]["execution"]["stage"] = "build"
         format["task"]["execution"]["return_code"] = public.returncode
@@ -317,7 +317,7 @@ def runOnce(format):
     #report about done to coordinator
     del format["task"]["unsigned"]["extracted-yamls"]
     del format["task"]["unsigned"]["attached-files-raw"]
-    pprint(format)
+    #pprint(format)
     reportCoordinator(format, user)
 
 if (len(sys.argv)) < 2:
